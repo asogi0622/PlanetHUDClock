@@ -7,6 +7,8 @@ import java.awt.image.*;
 import java.io.InputStream;
 import javax.imageio.ImageIO;
 import java.time.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class PlanetHUDClock extends JFrame {
      
@@ -22,6 +24,71 @@ public class PlanetHUDClock extends JFrame {
      private int selectedCityIndex = 0;
      private HUDCitySelectPanel citySelectPanel;
      private HUDButton timeButton;
+     private HUDOverlay overlay;
+
+     // 流れ星管理
+     private final java.util.List<ShootingStar> shootingStars = new ArrayList<>();
+     private int shootingStarCooldown = 0;
+
+     private void updateShootingStars() {
+
+         // クールダウン
+         if (shootingStarCooldown > 0) {
+             shootingStarCooldown--;
+         } else {
+             // ランダム発生（低確率）
+             if (Math.random() < 0.01) {
+                 shootingStars.add(new ShootingStar(getWidth(), getHeight()));
+                 shootingStarCooldown = 60;
+             }
+         }
+
+          // 更新＆削除
+          shootingStars.removeIf(star -> {
+              star.update();
+              return !star.isAlive();
+          });
+      }
+
+     // overlay状態を一元管理する
+     enum OverlayState {
+         NONE,
+         MODE_SELECT,
+         CITY_SELECT
+     }
+
+     private OverlayState overlayState = OverlayState.NONE;
+
+     private void updateOverlayState() {
+         if(overlay != null) {
+            overlay.setVisible(overlayState != OverlayState.NONE);
+         }
+     }
+
+     private void showModeSelect() {
+          overlayState = OverlayState.MODE_SELECT;
+
+          selectPanel.open();
+          citySelectPanel.close();
+          
+          updateOverlayState();
+     }
+
+     private void showCitySelect() {
+         overlayState = OverlayState.CITY_SELECT;
+
+         selectPanel.close();
+         citySelectPanel.open();
+
+         updateOverlayState();
+     }
+
+     private void hideAllOverlay() {
+         overlayState = OverlayState.NONE;
+         selectPanel.close();
+         citySelectPanel.close();
+         updateOverlayState();
+     }
 
      // ミッション時間（MET）
      private long missionStartMillis;
@@ -90,17 +157,16 @@ public class PlanetHUDClock extends JFrame {
                   // クリック座標
                   Point p = e.getPoint();
 
-                  // MODE選択パネルが開いていて、外をクリックしたら閉じる
-                  if (selectPanel.isVisible() &&
-                      !selectPanel.getBounds().contains(p)) {
-                      selectPanel.close();
+                  boolean clickedOutside =
+                      (selectPanel != null && selectPanel.isVisible()
+                          && !selectPanel.getBounds().contains(p))
+                   || (citySelectPanel.isVisible()
+                          && !citySelectPanel.getBounds().contains(p));
+
+                  if (clickedOutside) { 
+                      hideAllOverlay();
                   }
 
-                  // 都市選択パネルが開いていて、外をクリックしたら閉じる
-                  if (citySelectPanel.isVisible() &&
-                      !citySelectPanel.getBounds().contains(p)) {
-                      citySelectPanel.close();
-                  }
                }
            });
          
@@ -127,6 +193,10 @@ public class PlanetHUDClock extends JFrame {
          bg.add(uranusClock);
          bg.add(neptuneClock);
 
+         // オーバーレイ追加
+         overlay = new HUDOverlay();
+         bg.add(overlay);
+
          // 背景画像パネル
          BackgroundPanel back = new BackgroundPanel("/background2.jpg");
          bg.add(back);
@@ -140,6 +210,13 @@ public class PlanetHUDClock extends JFrame {
          Timer timer = new Timer(100, e -> updateClocks());
          timer.start();
 
+         // 描画・エフェクト用タイマー（約60fps)
+         Timer renderTimer = new Timer(16, e -> {
+             updateShootingStars();
+             repaint();
+         });
+         renderTimer.start();
+
          selectPanel = new HUDSelectPanel(20, 140, 300, 320);
          bg.add(selectPanel);
 
@@ -151,10 +228,7 @@ public class PlanetHUDClock extends JFrame {
          timeButton = new HUDButton(
             "CITY / MODE SWITCH",
             20, 20, 260, 48,
-            () -> {
-                citySelectPanel.close();
-                selectPanel.open();
-            }
+            this::showModeSelect
         );
 
         bg.add(timeButton);
@@ -177,6 +251,62 @@ private void updateTimeScale() {
         default       -> timeScale = 1.0;
     }
 }
+
+// 流れ星
+class ShootingStar {
+    float x, y;
+    float vx, vy;
+    int life;
+    int maxLife;
+
+    ShootingStar(int w, int h) {
+        // 画面外から出現
+        x = (float)(Math.random() * w);
+        y = -50;
+
+       vx = -6f - (float)Math.random() * 4f;
+       vy = 6f + (float)Math.random() * 4f;
+
+       maxLife = 40 + (int)(Math.random() * 20);
+       life = maxLife;
+    }
+
+    void update() {
+        x += vx;
+        y += vy;
+        life--;
+    }
+
+    boolean isAlive() {
+       return life > 0;
+    }
+
+    void draw(Graphics2D g2) {
+       float alpha = life / (float) maxLife;
+
+       Composite old = g2.getComposite();
+       g2.setComposite(
+          AlphaComposite.getInstance(
+              AlphaComposite.SRC_OVER,          
+              alpha
+          )
+       );
+
+       g2.setStroke(new BasicStroke(2f));
+       g2.setColor(Color.WHITE);
+
+       // 尾
+       g2.drawLine(
+           (int)x,
+           (int)y,
+           (int)(x - vx * 4),
+           (int)(y - vy * 4)
+       );
+
+       g2.setComposite(old);
+    }
+}
+
 
 // MET(Mission Elapsed Time) を秒で取得
 private double getMETSeconds() {
@@ -280,15 +410,47 @@ class ScaledPanel extends JPanel {
           }
 
           // 最後に背景を全面配置
-          if (background != null)
+          if (background != null) {
             background.setBounds(0, 0, getWidth(), getHeight());
+          }
+
+          // オーバーレイを前面に
+          if (overlay != null) {
+              overlay.setBounds(0, 0, getWidth(), getHeight());
+          }
+
+          /*
+           * SwingのZオーダー（0が最前面）
+           * 
+           * 0 : 選択パネル（MODE / CITY)
+           * 1 : オーバーレイ　（背面暗転）
+           * 2 : HUD(時計・ボタン）
+           * 最後 : 背景
+           */
+ 
 
           // 背景を最背面へ
-          if (background != null) {
-              setComponentZOrder(background, getComponentCount() - 1);
-    }
+          setComponentZOrder(background, getComponentCount() - 1);
 
-  }
+          // オーバーレイはその一つ上
+          setComponentZOrder(overlay, getComponentCount() - 2);
+
+          // 都市選択パネルは最前面に固定
+          switch (overlayState) {
+              case MODE_SELECT -> {
+                  setComponentZOrder(selectPanel, 0);
+                  setComponentZOrder(citySelectPanel, 1);
+              }
+              case CITY_SELECT -> {
+                 setComponentZOrder(citySelectPanel, 0);
+                 setComponentZOrder(selectPanel, 1);
+              }
+              case NONE -> {
+                  setComponentZOrder(selectPanel, getComponentCount() - 3);
+                  setComponentZOrder(citySelectPanel, getComponentCount() - 3);
+              }
+          }
+      }
 
 }
 
@@ -315,13 +477,46 @@ class BackgroundPanel extends JPanel {
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
-        if (img != null)
+
+        Graphics2D g2 = (Graphics2D) g.create();
+
+        if (img != null) {
             g.drawImage(img, 0, 0, getWidth(), getHeight(), this);
+        }
 
+        // 流れ星描画（背景エフェクト）
+        for (ShootingStar star : shootingStars) {
+            star.draw(g2);
+        }
+
+        g2.dispose();
+    }
 }
 
-}
+// 背景を暗くするオーバーレイ（都市選択時用）
+class HUDOverlay extends JComponent {
 
+    HUDOverlay() {
+       setOpaque(false);
+       setVisible(false);
+       setEnabled(true);
+
+       addMouseListener(new MouseAdapter() {});
+    }
+
+    @Override
+    protected void paintComponent(Graphics g) {
+        Graphics2D g2 = (Graphics2D) g.create();
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
+
+        // 半透明の暗幕
+        g2.setColor(new Color(0, 0, 0, 140));
+        g2.fillRect(0, 0, getWidth(), getHeight());
+
+        g2.dispose();
+    }
+}
+ 
 // HUD 時計ラベル（座標保持つき)
 class HUDClockLabel extends JLabel implements ScalableComponent {
 
@@ -493,9 +688,13 @@ class HUDSelectPanel extends JComponent implements ScalableComponent {
     @Override public int baseW() { return bw; }
     @Override public int baseH() { return bh; }
 
-    void open()  { setVisible(true); repaint(); }
-    void close() { setVisible(false); repaint(); }
+    void open()  {
+        setVisible(true);
+    }
 
+    void close() {
+        setVisible(false);
+    }
 
     // 選択されたときの処理
     private void onSelect(int index) {
@@ -520,9 +719,11 @@ class HUDSelectPanel extends JComponent implements ScalableComponent {
          
          if (timeBase != TimeBase.REAL_WORLD) {
              missionStartMillis = System.currentTimeMillis();
-             citySelectPanel.close();
+             hideAllOverlay();
          } else {
+             overlayState = OverlayState.CITY_SELECT;
              citySelectPanel.open();
+             updateOverlayState();
          }
 
          updateClocks();
@@ -589,7 +790,8 @@ class HUDCitySelectPanel extends JComponent implements ScalableComponent {
                    selectedCityIndex = index;
                    updateClocks();
                    timeButton.setText(getTimeButtonLabel());
-                   close();
+                   
+                   hideAllOverlay();
                }
            }
 
@@ -618,8 +820,13 @@ class HUDCitySelectPanel extends JComponent implements ScalableComponent {
     @Override public int baseW() { return bw; }
     @Override public int baseH() { return bh; }
 
-    void open()  { setVisible(true); repaint(); }
-    void close() { setVisible(false); repaint(); }
+    void open()  {
+        setVisible(true);
+    }
+
+    void close() {
+        setVisible(false);
+    }
 
     @Override
     protected void paintComponent(Graphics g) {
